@@ -66,7 +66,7 @@ public:
         return buffer_;
     }
 
-    size_t Capacity() const {
+    [[nodiscard]] size_t Capacity() const {
         return capacity_;
     }
 
