@@ -12,6 +12,9 @@
 template <typename T>
 class Vector {
 public:
+    using iterator = T*;
+    using const_iterator = const T*;
+
     Vector() = default;
 
     explicit Vector(size_t size)
@@ -64,64 +67,126 @@ public:
         std::destroy_n(data_.GetAddress(), size_);
     }
 
+    iterator begin() noexcept {
+        return data_.GetAddress();
+    }
+    iterator end() noexcept {
+        return data_.GetAddress() + size_;
+    }
+    const_iterator begin() const noexcept {
+        return data_.GetAddress();
+    }
+    const_iterator end() const noexcept {
+        return data_.GetAddress() + size_;
+    }
+    const_iterator cbegin() const noexcept {
+        return data_.GetAddress();
+    }
+    const_iterator cend() const noexcept {
+        return data_.GetAddress() + size_;
+    }
+
+    iterator Insert(const_iterator pos, const T& value) {
+        return Emplace(pos, value);
+    }
+
+    iterator Insert(const_iterator pos, T&& value) {
+        return Emplace(pos, std::move(value));
+    }
+
+    template <typename... Args>
+    iterator Emplace(const_iterator pos, Args&&... args) {
+        size_t offset = pos - cbegin();
+
+        if (size_ == Capacity()) {
+            RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
+            std::construct_at(new_data + offset, std::forward<Args>(args)...);
+
+            try {
+                ShiftDataToNewMemory(data_.GetAddress(), offset, new_data.GetAddress());
+            } catch (...) {
+                std::destroy_n(new_data.GetAddress() + offset, 1);
+                throw;
+            }
+
+            try {
+                ShiftDataToNewMemory(data_.GetAddress() + offset, size_ - offset, new_data.GetAddress() + offset + 1);
+            } catch (...) {
+                std::destroy_n(new_data.GetAddress(), offset + 1);
+                throw;
+            }
+
+            std::destroy_n(data_.GetAddress(), size_);
+
+            data_.Swap(new_data);
+        } else {
+            if (pos == cend()) {
+                std::construct_at(end(), std::forward<Args>(args)...);
+            } else {
+                T temp_val(std::forward<Args>(args)...);
+
+                std::construct_at(end(), std::move(data_[size_ - 1]));
+                std::move_backward(begin() + offset, end() - 1, end());
+                data_[offset] = std::move(temp_val);
+            }
+        }
+
+        ++size_;
+        return begin() + offset;
+    }
+
+    iterator Erase(const_iterator pos) {
+        size_t offset = pos - cbegin();
+
+        std::move(begin() + offset + 1, end(), begin() + offset);
+        std::destroy_at(data_.GetAddress() + offset);
+        --size_;
+
+        return begin() + offset;
+    }
+
     void Reserve(size_t new_capacity) {
         if (new_capacity <= data_.Capacity()) {
             return;
         }
 
         RawMemory<T> new_data(new_capacity);
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-            std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
-        } else {
-            std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
+        ShiftDataToNewMemory(data_.GetAddress(), size_, new_data.GetAddress());
         std::destroy_n(data_.GetAddress(), size_);
+
         data_.Swap(new_data);
     }
 
     void Resize(size_t new_size) {
-        if (new_size < size_) {
-            std::destroy_n(data_.GetAddress() + new_size, size_ - new_size);
-            size_ = new_size;
-        } else if (new_size > size_) {
+        if (new_size > Capacity()) {
             Reserve(new_size);
+        }
+
+        if (new_size > size_) {
             std::uninitialized_value_construct_n(data_.GetAddress() + size_, new_size - size_);
-            size_ = new_size;
+        } else {
+            std::destroy_n(data_.GetAddress() + new_size, size_ - new_size);
         }
+
+        size_ = new_size;
     }
 
-    void PushBack(const T& value) {
-        if (size_ < Capacity()) {
-            ::new (data_.GetAddress() + size_) T(value);
-            ++size_;
-            return;
-        }
-        ReallocateAndPush(value);
-    }
-
-    void PushBack(T&& value) {
-        if (size_ < Capacity()) {
-            ::new (data_.GetAddress() + size_) T(std::move(value));
-            ++size_;
-            return;
-        }
-        ReallocateAndPush(std::move(value));
+    template <typename Val>
+    void PushBack(Val&& value) {
+        EmplaceBack(std::forward<Val>(value));
     }
 
     void PopBack() noexcept {
         assert(size_ > 0);
+
         std::destroy_at(data_ + size_ - 1);
         --size_;
     }
 
     template <typename... Args>
     T& EmplaceBack(Args&&... args) {
-        if (size_ < Capacity()) {
-            ::new (data_.GetAddress() + size_) T(std::forward<Args>(args)...);
-            ++size_;
-            return data_[size_ - 1];
-        }
-        return ReallocateAndEmplace(std::forward<Args>(args)...);
+        iterator it = Emplace(end(), std::forward<Args>(args)...);
+        return *it;
     }
 
     void Swap(Vector& other) noexcept {
@@ -150,58 +215,12 @@ private:
     RawMemory<T> data_;
     size_t size_ = 0;
 
-private:
-    template <class U>
-    void ReallocateAndPush(U&& value) {
-        RawMemory<T> data_copy = RawMemory<T>(size_ == 0 ? 1 : size_ * 2);
+
+    void ShiftDataToNewMemory(T* old_buf, size_t count, T* new_buf) {
         if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-            std::uninitialized_move_n(data_.GetAddress(), size_, data_copy.GetAddress());
+            std::uninitialized_move_n(old_buf, count, new_buf);
         } else {
-            std::uninitialized_copy_n(data_.GetAddress(), size_, data_copy.GetAddress());
+            std::uninitialized_copy_n(old_buf, count, new_buf);
         }
-
-        new (data_copy + size_) T(std::forward<U>(value));
-
-        std::destroy_n(data_.GetAddress(), size_);
-        data_.Swap(data_copy);
-        ++size_;
-    }
-
-    template <typename... Args>
-    T& ReallocateAndEmplace(Args&&... args) {
-        RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
-        T* const new_begin = new_data.GetAddress();
-        T* const dest      = new_begin + size_;
-
-        ::new (dest) T(std::forward<Args>(args)...);
-
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-            size_t i = 0;
-            try {
-                for (; i < size_; ++i) {
-                    ::new (new_begin + i) T(std::move(data_[i]));
-                }
-            } catch (...) {
-                std::destroy_n(new_begin, i);
-                std::destroy_at(dest);
-                throw;
-            }
-        } else {
-            size_t i = 0;
-            try {
-                for (; i < size_; ++i) {
-                    ::new (new_begin + i) T(data_[i]);
-                }
-            } catch (...) {
-                std::destroy_n(new_begin, i);
-                std::destroy_at(dest);
-                throw;
-            }
-        }
-
-        std::destroy_n(data_.GetAddress(), size_);
-        data_.Swap(new_data);
-        ++size_;
-        return data_[size_ - 1];
     }
 };

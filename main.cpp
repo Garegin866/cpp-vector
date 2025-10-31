@@ -6,7 +6,7 @@
 
 namespace {
 
-    // "Магическое" число, используемое для отслеживания живости объекта
+// "Магическое" число, используемое для отслеживания живости объекта
     inline const uint32_t DEFAULT_COOKIE = 0xdeadbeef;
 
     struct TestObj {
@@ -391,4 +391,3 @@ int main() {
         std::cerr << e.what() << std::endl;
     }
 }
-  
